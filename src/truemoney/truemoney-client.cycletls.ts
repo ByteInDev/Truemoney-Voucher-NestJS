@@ -1,4 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { promises as fs } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import initCycleTLS, {
   type CycleTLSClient,
   type CycleTLSResponse,
@@ -10,6 +13,15 @@ import {
   TruemoneyClient,
   TruemoneyRequestOptions,
 } from './truemoney-client';
+
+// CycleTLS spawns its bundled Go binary with `shell: true` and requires
+// the exec bit. Serverless (Vercel Lambda) bundles are read-only and may
+// strip exec permissions, which makes the spawn hang silently. We copy
+// the binary to a writable temp dir (once per instance) and chmod +x it.
+const TRANSPORT_BINARIES: Record<string, Record<string, string>> = {
+  linux: { x64: 'index', arm64: 'index-arm64', arm: 'index-arm' },
+};
+const TRANSPORT_READY_TIMEOUT_MS = 20_000;
 
 export const TRUEMONEY_HOST = 'gift.truemoney.com';
 
@@ -55,14 +67,49 @@ export class CycletlsTruemoneyClient
   // and validation-only requests free of the expensive cold-start
   // handshake; a failed spawn is retried on the next request.
   private ensureClient(): Promise<CycleTLSClient> {
-    this.initPromise ??= initCycleTLS({ timeout: 15_000 }).catch((err) => {
+    this.initPromise ??= this.startTransport();
+    return this.initPromise;
+  }
+
+  private async startTransport(): Promise<CycleTLSClient> {
+    try {
+      const executablePath = await this.prepareExecutable();
+      return await withTimeout(
+        initCycleTLS({
+          timeout: 15_000,
+          ...(executablePath ? { executablePath } : {}),
+        }),
+        TRANSPORT_READY_TIMEOUT_MS,
+        'browser-fingerprint transport did not become ready in time',
+      );
+    } catch (err) {
       this.logger.error(
         `failed to start browser-fingerprint transport: ${String(err)}`,
       );
       this.initPromise = undefined;
       throw err;
-    });
-    return this.initPromise;
+    }
+  }
+
+  // Returns the path of a spawnable binary copy (or undefined to let the
+  // package use its bundled binary, which is fine on dev machines where
+  // the exec bit survives). On serverless the copy lives in the writable
+  // temp dir so chmod +x actually sticks.
+  private async prepareExecutable(): Promise<string | undefined> {
+    const binary = TRANSPORT_BINARIES[process.platform]?.[os.arch()];
+    if (!binary) {
+      return undefined;
+    }
+    const src = path.join(path.dirname(require.resolve('cycletls')), binary);
+    const dest = path.join(os.tmpdir(), `truemoney-${binary}`);
+    try {
+      await fs.access(dest, fs.constants.X_OK);
+      return dest; // already prepared on this instance
+    } catch {
+      await fs.copyFile(src, dest);
+      await fs.chmod(dest, 0o755);
+      return dest;
+    }
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -114,4 +161,28 @@ export class CycletlsTruemoneyClient
       typeof resp.data === 'string' ? resp.data : String(resp.data ?? '');
     return raw.slice(0, MAX_BODY_BYTES);
   }
+}
+
+// CycleTLS does not bound how long the spawn/ready handshake may take (a
+// failed child process can leave the init promise pending forever), so
+// enforce a deadline and surface a readable error instead of hanging the
+// whole function invocation until the platform kills it.
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
