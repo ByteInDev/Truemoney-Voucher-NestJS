@@ -134,12 +134,20 @@ npm run vercel:deploy        # = npm run build && vercel --prod
 
 **Serverless caveats:**
 
-- the cycletls transport spawns a bundled Go binary per function instance
-  (cold start). If Vercel blocks child processes, fall back to Docker
+- the cycletls transport spawns a bundled Go binary lazily — only on the
+  first redeem, never at bootstrap, so `/status`, `/` and validation
+  errors stay fast on cold instances. If Vercel blocks child processes,
+  fall back to Docker
 - `dist/` must exist when deploying (`npm run build` runs automatically via
   the `buildCommand` in `vercel.json`, or locally before `vercel --prod`)
 - `cf_clearance` starts cold per instance — Cloudflare behaviour and latency
   may differ from Docker/VPS
+
+**Performance on the Free (Hobby) plan:** functions run only in `iad1`
+(US East) — Thailand→Virginia RTT (~200 ms) is fixed and unavoidable, and
+cannot be configured away on a free plan. `maxDuration: 60` is honored.
+Measure with a keep-alive client (e.g. `httpx`/`curl` with connection
+reuse), not a fresh `curl.exe` per request, to see actual server time.
 
 ## Browser fingerprinting (cycletls)
 

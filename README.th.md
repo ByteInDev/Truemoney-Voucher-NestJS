@@ -140,12 +140,19 @@ npm run vercel:deploy        # = npm run build && vercel --prod
 
 **ข้อควรระวังแบบ serverless:**
 
-- transport cycletls spawn ไบนารี Go ในตัวต่อ function instance (cold start)
-  ถ้า Vercel บล็อก child process ให้กลับไปใช้ Docker แทน
+- transport cycletls spawn ไบนารี Go แบบ **lazy** — เฉพาะ redeem ครั้งแรก
+  ไม่ใช่ตอน bootstrap ทำให้ `/status`, `/` และ validation error ยังเร็วแม้
+  instance เย็น ถ้า Vercel บล็อก child process ให้กลับไปใช้ Docker แทน
 - ต้องมี `dist/` ตอน deploy (`npm run build` รันอัตโนมัติผ่าน `buildCommand`
   ใน `vercel.json` หรือรันเองก่อน `vercel --prod`)
 - `cf_clearance` เริ่มเย็นทุก instance — พฤติกรรมกับ Cloudflare และ latency
   อาจต่างจาก Docker/VPS
+
+**ประสิทธิภาพบน Free (Hobby) plan:** ฟังก์ชันรันได้แค่ `iad1` (US East)
+— RTT ไทย→เวอร์จิเนีย (~200 ms) แก้ไม่ได้บน free plan
+`maxDuration: 60` ใช้ได้ วัดด้วย client แบบ keep-alive
+(เช่น `httpx` หรือ curl ที่ reuse connection) อย่าใช้ `curl.exe` ใหม่ทุกครั้ง
+เพื่อดูเวลา server จริง
 
 ## Browser fingerprinting (cycletls)
 

@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import initCycleTLS, {
   type CycleTLSClient,
   type CycleTLSResponse,
@@ -48,21 +43,26 @@ export const FIREFOX_HEADER_ORDER = [
 
 @Injectable()
 export class CycletlsTruemoneyClient
-  implements TruemoneyClient, OnModuleInit, OnModuleDestroy
+  implements TruemoneyClient, OnModuleDestroy
 {
   private readonly logger = new Logger('TruemoneyClient');
   private readonly jar = new CookieJar();
   private client?: CycleTLSClient;
+  private initPromise?: Promise<CycleTLSClient>;
 
-  async onModuleInit(): Promise<void> {
-    try {
-      this.client = await initCycleTLS({ timeout: 15_000 });
-    } catch (err) {
+  // Lazy transport startup: the bundled Go child process is only spawned
+  // on the first redeem. On serverless (Vercel) this keeps liveness probes
+  // and validation-only requests free of the expensive cold-start
+  // handshake; a failed spawn is retried on the next request.
+  private ensureClient(): Promise<CycleTLSClient> {
+    this.initPromise ??= initCycleTLS({ timeout: 15_000 }).catch((err) => {
       this.logger.error(
         `failed to start browser-fingerprint transport: ${String(err)}`,
       );
+      this.initPromise = undefined;
       throw err;
-    }
+    });
+    return this.initPromise;
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -83,9 +83,7 @@ export class CycletlsTruemoneyClient
     url: string,
     options: TruemoneyRequestOptions,
   ): Promise<RawResponse> {
-    if (!this.client) {
-      throw new Error('browser-fingerprint transport not initialized');
-    }
+    this.client ??= await this.ensureClient();
     const resp = await this.client(
       url,
       {
