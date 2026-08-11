@@ -1,0 +1,5 @@
+# .vercelignore takes precedence over .gitignore, so dist/ and node_modules/
+# are NOT excluded (the serverless entry requires ../dist).
+.env
+*.log
+coverage

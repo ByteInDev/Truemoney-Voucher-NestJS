@@ -127,6 +127,26 @@ error ที่เกิดจากตัวเราเป็น `code` + `mes
 PORT=8080 npm run start:prod
 ```
 
+## Deploy บน Vercel
+
+`api/index.js` คือ serverless entrypoint: bootstrap แอป NestJS หนึ่งครั้งต่อ
+function instance แล้วส่งทุก request ไปที่ Express adapter
+`vercel.json` rewrite ทุก path เข้ามาที่ฟังก์ชันนี้ และรัน `npm run build`
+ก่อนแพ็ก
+
+```bash
+npm run vercel:deploy        # = npm run build && vercel --prod
+```
+
+**ข้อควรระวังแบบ serverless:**
+
+- transport cycletls spawn ไบนารี Go ในตัวต่อ function instance (cold start)
+  ถ้า Vercel บล็อก child process ให้กลับไปใช้ Docker แทน
+- ต้องมี `dist/` ตอน deploy (`npm run build` รันอัตโนมัติผ่าน `buildCommand`
+  ใน `vercel.json` หรือรันเองก่อน `vercel --prod`)
+- `cf_clearance` เริ่มเย็นทุก instance — พฤติกรรมกับ Cloudflare และ latency
+  อาจต่างจาก Docker/VPS
+
 ## Browser fingerprinting (cycletls)
 
 เวอร์ชัน Go สร้าง Firefox TLS + HTTP/2 fingerprint ด้วยมือโดยใช้ uTLS

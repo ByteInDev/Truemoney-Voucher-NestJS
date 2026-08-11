@@ -121,6 +121,26 @@ Inside `status.code` of the envelope:
 PORT=8080 npm run start:prod
 ```
 
+## Deploy to Vercel
+
+`api/index.js` is the serverless entrypoint: it bootstraps the NestJS app
+once per function instance and hands every request to the Express adapter.
+`vercel.json` rewrites every path into it and runs `npm run build` before
+packaging.
+
+```bash
+npm run vercel:deploy        # = npm run build && vercel --prod
+```
+
+**Serverless caveats:**
+
+- the cycletls transport spawns a bundled Go binary per function instance
+  (cold start). If Vercel blocks child processes, fall back to Docker
+- `dist/` must exist when deploying (`npm run build` runs automatically via
+  the `buildCommand` in `vercel.json`, or locally before `vercel --prod`)
+- `cf_clearance` starts cold per instance — Cloudflare behaviour and latency
+  may differ from Docker/VPS
+
 ## Browser fingerprinting (cycletls)
 
 The Go version hand-builds a Firefox TLS + HTTP/2 fingerprint with uTLS.
