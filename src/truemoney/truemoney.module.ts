@@ -13,5 +13,6 @@ import { TruemoneyService } from './truemoney.service';
       useClass: CycletlsTruemoneyClient,
     },
   ],
+  exports: [TruemoneyService],
 })
 export class TruemoneyModule {}

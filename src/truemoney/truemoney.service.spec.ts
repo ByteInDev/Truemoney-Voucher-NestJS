@@ -114,4 +114,93 @@ describe('TruemoneyService', () => {
       code: 500,
     });
   });
+
+  it('replays a cached SUCCESS answer without a second upstream call', async () => {
+    client.respond = {
+      status: 200,
+      body: '{"status":{"code":"SUCCESS","message":"","data":{}}}',
+    };
+    await service.redeem('ABCD1234EFGH', '0812345678');
+    await service.redeem('ABCD1234EFGH', '0812345678');
+    expect(client.calls).toHaveLength(1);
+  });
+
+  it('caches per (code, mobile) pair', async () => {
+    client.respond = {
+      status: 200,
+      body: '{"status":{"code":"SUCCESS","message":"","data":{}}}',
+    };
+    await service.redeem('ABCD1234EFGH', '0812345678');
+    await service.redeem('ABCD1234EFGH', '0899999999');
+    expect(client.calls).toHaveLength(2);
+  });
+
+  it('does not cache error envelopes', async () => {
+    client.respond = {
+      status: 400,
+      body: '{"status":{"code":"TARGET_USER_NOT_FOUND","message":"","data":null}}',
+    };
+    await service.redeem('ABCD1234EFGH', '0812345678');
+    await service.redeem('ABCD1234EFGH', '0812345678');
+    expect(client.calls).toHaveLength(2);
+  });
+
+  it('does not cache non-envelope bodies or transport failures', async () => {
+    client.respond = { status: 200, body: '<html>challenge</html>' };
+    await expect(
+      service.redeem('ABCD1234EFGH', '0812345678'),
+    ).rejects.toBeDefined();
+
+    client.respond = {
+      status: 200,
+      body: '{"status":{"code":"SUCCESS","message":"","data":{}}}',
+    };
+    await service.redeem('ABCD1234EFGH', '0812345678');
+    await service.redeem('ABCD1234EFGH', '0812345678');
+    // 1 challenge call + 1 SUCCESS call; the second SUCCESS redeem is a
+    // cache hit, so the challenge was never cached.
+    expect(client.calls).toHaveLength(2);
+  });
+
+  it('single-flights concurrent redeems of the same key', async () => {
+    client.respond = {
+      status: 200,
+      body: '{"status":{"code":"SUCCESS","message":"","data":{}}}',
+    };
+    const [a, b] = await Promise.all([
+      service.redeem('ABCD1234EFGH', '0812345678'),
+      service.redeem('ABCD1234EFGH', '0812345678'),
+    ]);
+    expect(a).toBe(b);
+    expect(client.calls).toHaveLength(1);
+  });
+
+  it('re-probes upstream after the cache TTL expires', async () => {
+    client.respond = {
+      status: 200,
+      body: '{"status":{"code":"SUCCESS","message":"","data":{}}}',
+    };
+    const shortTtl = new TruemoneyService(client);
+    shortTtl.cacheTtlMs = 30;
+    shortTtl.cacheMax = 1024;
+    await shortTtl.redeem('ABCD1234EFGH', '0812345678');
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await shortTtl.redeem('ABCD1234EFGH', '0812345678');
+    expect(client.calls).toHaveLength(2);
+  });
+
+  it('evicts the oldest entry at capacity', async () => {
+    client.respond = {
+      status: 200,
+      body: '{"status":{"code":"SUCCESS","message":"","data":{}}}',
+    };
+    const tiny = new TruemoneyService(client);
+    tiny.cacheMax = 2;
+    await tiny.redeem('AAAA1111AAAA', '0812345678');
+    await tiny.redeem('BBBB2222BBBB', '0812345678');
+    await tiny.redeem('CCCC3333CCCC', '0812345678'); // evicts AAAA
+    await tiny.redeem('AAAA1111AAAA', '0812345678'); // must go upstream again
+    expect(client.calls).toHaveLength(4);
+  });
 });

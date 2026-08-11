@@ -12,9 +12,30 @@ import { mobileNumber, voucherCode } from './voucher';
 
 const REQUEST_TIMEOUT_SECONDS = 15;
 
+// Successful redeem answers are cached in-process keyed by (code, mobile)
+// for ten minutes, mirroring the Go version. A client that times out and
+// retries replays the real answer of the first attempt instead of
+// re-redeeming the voucher; error envelopes and transport failures are
+// never cached. The cache is an LRU-ish Map: eviction drops the oldest
+// INSERTED entry when at capacity.
+const CACHE_TTL_MS = 10 * 60_000;
+const CACHE_MAX_ENTRIES = 1024;
+
+interface CacheEntry {
+  body: string;
+  ts: number;
+}
+
 @Injectable()
 export class TruemoneyService {
   private readonly logger = new Logger('TruemoneyService');
+  private readonly cache = new Map<string, CacheEntry>();
+  // Single-flight: concurrent redeems of the same (code, mobile) share one
+  // upstream call, so a retry storm cannot redeem the voucher twice.
+  private readonly inflight = new Map<string, Promise<string>>();
+  // Tunable for tests; defaults mirror the Go version (10 min / 1024).
+  private cacheTtlMs = CACHE_TTL_MS;
+  private cacheMax = CACHE_MAX_ENTRIES;
 
   constructor(
     @Inject(TRUEMONEY_CLIENT) private readonly client: TruemoneyClient,
@@ -30,6 +51,34 @@ export class TruemoneyService {
       throw ErrBadRequest();
     }
 
+    const key = `${code}|${mobile}`;
+
+    const cached = this.cacheGet(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const pending = this.inflight.get(key);
+    if (pending) {
+      return pending; // share the in-flight upstream call
+    }
+
+    const promise = this.doTruemoneyRedeem(code, mobile, key);
+    this.inflight.set(key, promise);
+    // Both branches delete the in-flight entry; the two-arg then() keeps
+    // the derived promise from becoming an unhandled rejection.
+    promise.then(
+      () => this.inflight.delete(key),
+      () => this.inflight.delete(key),
+    );
+    return promise;
+  }
+
+  private async doTruemoneyRedeem(
+    code: string,
+    mobile: string,
+    key: string,
+  ): Promise<string> {
     const body = JSON.stringify({ mobile });
 
     try {
@@ -50,7 +99,11 @@ export class TruemoneyService {
           timeoutSeconds: REQUEST_TIMEOUT_SECONDS,
         },
       );
-      return this.validJSON(resp.body, resp.status);
+      const raw = this.validJSON(resp.body, resp.status);
+      if (isSuccessBody(raw)) {
+        this.cacheSet(key, raw);
+      }
+      return raw;
     } catch (err) {
       this.logger.error(
         `redeem failed: ${(err as Error).message} code=${maskCode(code)}`,
@@ -89,6 +142,53 @@ export class TruemoneyService {
     }
 
     return raw;
+  }
+
+  private cacheGet(key: string): string | undefined {
+    const entry = this.cache.get(key);
+    if (!entry) {
+      return undefined;
+    }
+    if (Date.now() - entry.ts > this.cacheTtlMs) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    return entry.body;
+  }
+
+  private cacheSet(key: string, body: string): void {
+    if (this.cache.size >= this.cacheMax) {
+      // Evict the oldest inserted entry (first key of the Map).
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) {
+        this.cache.delete(oldest);
+      }
+    }
+    this.cache.set(key, { body, ts: Date.now() });
+  }
+}
+
+// isSuccessBody reports whether a raw TrueMoney answer is a SUCCESS
+// envelope — the only answers that are cached (parity with the Go
+// version). Never throws: a malformed body simply isn't cached.
+function isSuccessBody(raw: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'status' in parsed
+    ) {
+      const status = (parsed as { status: unknown }).status;
+      return (
+        typeof status === 'object' &&
+        status !== null &&
+        (status as { code?: unknown }).code === 'SUCCESS'
+      );
+    }
+    return false;
+  } catch {
+    return false;
   }
 }
 

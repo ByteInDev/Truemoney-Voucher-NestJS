@@ -1,7 +1,10 @@
 import { Controller, Get, HttpCode, Post } from '@nestjs/common';
+import { LatencyRegistry } from './common/latency.registry';
 
 @Controller()
 export class AppController {
+  constructor(private readonly latency: LatencyRegistry) {}
+
   // Liveness probe for load balancers / uptime monitors.
   @Get('status')
   @HttpCode(200)
@@ -11,7 +14,10 @@ export class AppController {
   @HttpCode(200)
   statusPost(): void {}
 
-  // Root endpoint: basic service information.
+  // Root endpoint: minimal service info + the last observed latency (ms)
+  // of every registered route, e.g.
+  // { "ms": { "/": 1, "/status": 0, "/truemoney": 342 },
+  //   "message": "ByteInDev Service" }
   @Get()
   rootGet(): Record<string, unknown> {
     return this.rootInfo();
@@ -24,13 +30,8 @@ export class AppController {
 
   private rootInfo(): Record<string, unknown> {
     return {
-      service: 'truemoney-voucher',
-      version: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7),
-      platform: process.platform,
-      routes: [
-        'GET|POST /truemoney/{code}/{mobile}  redeem voucher',
-        'GET|POST /status                     liveness probe',
-      ],
+      ms: this.latency.snapshot(),
+      message: 'ByteInDev Service',
     };
   }
 }
