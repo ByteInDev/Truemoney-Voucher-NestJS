@@ -25,6 +25,8 @@ export class AppController {
   private rootInfo(): Record<string, unknown> {
     return {
       service: 'truemoney-voucher',
+      version: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7),
+      platform: process.platform,
       routes: [
         'GET|POST /truemoney/{code}/{mobile}  redeem voucher',
         'GET|POST /status                     liveness probe',
